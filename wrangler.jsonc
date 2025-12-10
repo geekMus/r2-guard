@@ -5,5 +5,12 @@
 	"compatibility_date": "2025-12-10",
 	"observability": {
 		"enabled": true
-	}
+	},
+	"r2_buckets": [
+		{
+			"binding": "BUCKET",
+			"bucket_name": "bucket",
+			"preview_bucket_name": "bucket"
+		}
+	]
 }
