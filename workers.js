@@ -1,14 +1,3 @@
-/**
- * 🌐 Cloudflare Worker - R2 专用下载 + 可配置文件预览策略（最终优化版）
- * ----------------------------------------------------------
- * 功能特性：
- * ✅ 仅访问 R2 对象存储
- * ✅ 支持 Range 请求（分片/多线程下载）
- * ✅ 根据 Content-Type 智能决定 inline / attachment
- * ✅ 自动补全 charset=utf-8
- * ✅ 错误页面美观、统一
- */
-
 const CHARSET_DEFAULT = 'utf-8';
 const ALLOWED_METHODS = new Set(['GET', 'HEAD']);
 
@@ -108,7 +97,7 @@ const getDisposition = (contentType, env) => {
 	return 'attachment';
 };
 
-/* -------------------- R2 下载逻辑 -------------------- */
+/* -------------------- 主处理逻辑 -------------------- */
 
 const handleR2Request = async (request, env) => {
 	if (!ALLOWED_METHODS.has(request.method)) {
