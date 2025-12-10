@@ -1,5 +1,5 @@
 /**
- * 🌐 Cloudflare Worker - R2 专用下载 + 可配置文件预览策略（统一错误页面）
+ * 🌐 Cloudflare Worker - R2 专用下载 + 可配置文件预览策略（最终优化版）
  * ----------------------------------------------------------
  * 功能特性：
  * ✅ 仅访问 R2 对象存储
@@ -23,9 +23,13 @@ const parseMimeList = (mimeStr) => {
 };
 
 const generateErrorPage = (statusCode, customMessage = null) => {
-	const msg =
-		customMessage ||
-		(statusCode === 404 ? '抱歉，您请求的资源未找到' : statusCode === 416 ? '请求的范围无效' : '请求的资源可能需要特殊权限或者暂时不可用');
+	const msg = customMessage || (statusCode === 404
+		? '抱歉，您请求的资源未找到'
+		: statusCode === 416
+		? '请求的范围无效'
+		: statusCode === 400
+		? '请求参数不完整或不合法'
+		: '请求的资源可能需要特殊权限或者暂时不可用');
 
 	return new Response(
 		`<!DOCTYPE html>
@@ -113,7 +117,7 @@ const handleR2Request = async (request, env) => {
 
 	const url = new URL(request.url);
 	const key = url.pathname.slice(1);
-	if (!key) return generateErrorPage(404);
+	if (!key) return generateErrorPage(404); // 空路径返回 404
 
 	const objMeta = await env.BUCKET.head(key).catch(() => null);
 	if (!objMeta) return generateErrorPage(404);
@@ -147,7 +151,7 @@ const handleR2Request = async (request, env) => {
 		const obj = await env.BUCKET.get(key);
 		if (!obj) return generateErrorPage(404);
 
-		headers.set('Content-Length', totalLength);
+		headers.set('Content-Length', totalLength.toString());
 		status = 200;
 		body = obj.body;
 	}
