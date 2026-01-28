@@ -104,15 +104,13 @@ const getDisposition = (contentType, env) => {
 const applyCORS = (headers) => {
 	headers.set('Access-Control-Allow-Origin', '*');
 	headers.set('Access-Control-Allow-Methods', 'GET,HEAD,OPTIONS');
-	headers.set('Access-Control-Allow-Headers', 'Range, Content-Type, Authorization');
-	headers.set('Access-Control-Expose-Headers', 'Content-Length, Content-Range, Accept-Ranges, Content-Type, Content-Disposition');
+	headers.set('Access-Control-Allow-Headers', 'Range, Content-Type, Authorization, If-None-Match');
+	headers.set('Access-Control-Expose-Headers', 'Content-Length, Content-Range, Accept-Ranges, Content-Type, Content-Disposition, ETag');
 };
 
-// ⭐ 专业关键点：统一给 Response 补 CORS
 const withCORS = (response) => {
 	const headers = new Headers(response.headers);
 	applyCORS(headers);
-
 	return new Response(response.body, {
 		status: response.status,
 		statusText: response.statusText,
@@ -123,7 +121,7 @@ const withCORS = (response) => {
 /* -------------------- 主处理逻辑 -------------------- */
 
 const handleR2Request = async (request, env) => {
-	// 1️⃣ OPTIONS 预检
+	// OPTIONS
 	if (request.method === 'OPTIONS') {
 		const headers = new Headers();
 		applyCORS(headers);
@@ -149,10 +147,21 @@ const handleR2Request = async (request, env) => {
 
 	const totalLength = objMeta.size;
 	const contentType = objMeta.httpMetadata?.contentType || 'application/octet-stream';
+	const etag = objMeta.etag;
 
 	const headers = new Headers();
 	headers.set('Content-Type', contentType);
 	headers.set('Accept-Ranges', 'bytes');
+	headers.set('ETag', etag);
+
+	// ⭐ Cache-Control（安全缓存）
+	headers.set('Cache-Control', 'public, max-age=300, stale-while-revalidate=3600');
+
+	// ⭐ ETag 命中 → 304（在 GET 之前）
+	const ifNoneMatch = request.headers.get('If-None-Match');
+	if (ifNoneMatch && ifNoneMatch === etag) {
+		return withCORS(new Response(null, { status: 304, headers }));
+	}
 
 	const rangeHeader = request.headers.get('Range');
 	let status, body;
@@ -164,7 +173,9 @@ const handleR2Request = async (request, env) => {
 		const { start, end } = range;
 		const chunkLength = end - start + 1;
 
-		const obj = await env.BUCKET.get(key, { range: { offset: start, length: chunkLength } });
+		const obj = await env.BUCKET.get(key, {
+			range: { offset: start, length: chunkLength },
+		});
 		if (!obj) return withCORS(generateErrorPage(404));
 
 		headers.set('Content-Range', `bytes ${start}-${end}/${totalLength}`);
@@ -187,7 +198,15 @@ const handleR2Request = async (request, env) => {
 		headers.set('Content-Type', `${contentType}; charset=${CHARSET_DEFAULT}`);
 	}
 
-	return withCORS(new Response(body, { status, headers }));
+	const response = withCORS(new Response(body, { status, headers }));
+
+	// ⭐ Cache API：只缓存 GET + 200 + 非 Range
+	if (request.method === 'GET' && status === 200 && !rangeHeader) {
+		const cacheKey = new Request(request.url, request);
+		await caches.default.put(cacheKey, response.clone());
+	}
+
+	return response;
 };
 
 /* -------------------- Worker 入口 -------------------- */
