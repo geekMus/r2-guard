@@ -142,6 +142,7 @@ const handleR2Request = async (request, env) => {
 		return withCORS(generateErrorPage(400, '路径解析失败'));
 	}
 
+	// 仅使用 HEAD 获取对象元信息
 	const objMeta = await env.BUCKET.head(key).catch(() => null);
 	if (!objMeta) return withCORS(generateErrorPage(404));
 
@@ -157,11 +158,20 @@ const handleR2Request = async (request, env) => {
 	// ⭐ Cache-Control（安全缓存）
 	headers.set('Cache-Control', 'public, max-age=300, stale-while-revalidate=3600');
 
-	// ⭐ ETag 命中 → 304（在 GET 之前）
+	// ⭐ ETag 命中 → 304（GET / HEAD 通用）
 	const ifNoneMatch = request.headers.get('If-None-Match');
 	if (ifNoneMatch && ifNoneMatch === etag) {
 		return withCORS(new Response(null, { status: 304, headers }));
 	}
+
+	// ⭐ HEAD-only 快速探测模式（原生强制）
+	if (request.method === 'HEAD') {
+		headers.set('Content-Length', totalLength.toString());
+		headers.set('Content-Disposition', getDisposition(contentType, env));
+		return withCORS(new Response(null, { status: 200, headers }));
+	}
+
+	// ===== GET 逻辑 =====
 
 	const rangeHeader = request.headers.get('Range');
 	let status, body;
@@ -201,7 +211,7 @@ const handleR2Request = async (request, env) => {
 	const response = withCORS(new Response(body, { status, headers }));
 
 	// ⭐ Cache API：只缓存 GET + 200 + 非 Range
-	if (request.method === 'GET' && status === 200 && !rangeHeader) {
+	if (status === 200 && !rangeHeader) {
 		const cacheKey = new Request(request.url, request);
 		await caches.default.put(cacheKey, response.clone());
 	}
