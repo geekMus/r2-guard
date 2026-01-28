@@ -17,10 +17,10 @@ const generateErrorPage = (statusCode, customMessage = null) => {
 		(statusCode === 404
 			? '抱歉，您请求的资源未找到'
 			: statusCode === 416
-			? '请求的范围无效'
-			: statusCode === 400
-			? '请求参数不完整或不合法'
-			: '请求的资源可能需要特殊权限或者暂时不可用');
+				? '请求的范围无效'
+				: statusCode === 400
+					? '请求参数不完整或不合法'
+					: '请求的资源可能需要特殊权限或者暂时不可用');
 
 	return new Response(
 		`<!DOCTYPE html>
@@ -62,7 +62,7 @@ const generateErrorPage = (statusCode, customMessage = null) => {
 		{
 			status: customMessage ? 500 : statusCode,
 			headers: { 'Content-Type': 'text/html; charset=utf-8' },
-		}
+		},
 	);
 };
 
@@ -99,11 +99,39 @@ const getDisposition = (contentType, env) => {
 	return 'attachment';
 };
 
+/* -------------------- CORS -------------------- */
+
+const applyCORS = (headers) => {
+	headers.set('Access-Control-Allow-Origin', '*');
+	headers.set('Access-Control-Allow-Methods', 'GET,HEAD,OPTIONS');
+	headers.set('Access-Control-Allow-Headers', 'Range, Content-Type, Authorization');
+	headers.set('Access-Control-Expose-Headers', 'Content-Length, Content-Range, Accept-Ranges, Content-Type, Content-Disposition');
+};
+
+// ⭐ 专业关键点：统一给 Response 补 CORS
+const withCORS = (response) => {
+	const headers = new Headers(response.headers);
+	applyCORS(headers);
+
+	return new Response(response.body, {
+		status: response.status,
+		statusText: response.statusText,
+		headers,
+	});
+};
+
 /* -------------------- 主处理逻辑 -------------------- */
 
 const handleR2Request = async (request, env) => {
+	// 1️⃣ OPTIONS 预检
+	if (request.method === 'OPTIONS') {
+		const headers = new Headers();
+		applyCORS(headers);
+		return new Response(null, { status: 204, headers });
+	}
+
 	if (!ALLOWED_METHODS.has(request.method)) {
-		return generateErrorPage(405, '不允许的请求方法');
+		return withCORS(generateErrorPage(405, '不允许的请求方法'));
 	}
 
 	const url = new URL(request.url);
@@ -111,13 +139,13 @@ const handleR2Request = async (request, env) => {
 	try {
 		key = decodeURIComponent(url.pathname.slice(1));
 		key = key.trim().replace(/\\/g, '/');
-		if (!key) return generateErrorPage(404); // 空路径返回 404
-	} catch (e) {
-		return generateErrorPage(400, '路径解析失败');
+		if (!key) return withCORS(generateErrorPage(404));
+	} catch {
+		return withCORS(generateErrorPage(400, '路径解析失败'));
 	}
 
 	const objMeta = await env.BUCKET.head(key).catch(() => null);
-	if (!objMeta) return generateErrorPage(404);
+	if (!objMeta) return withCORS(generateErrorPage(404));
 
 	const totalLength = objMeta.size;
 	const contentType = objMeta.httpMetadata?.contentType || 'application/octet-stream';
@@ -131,13 +159,13 @@ const handleR2Request = async (request, env) => {
 
 	if (rangeHeader) {
 		const range = parseRange(rangeHeader, totalLength);
-		if (!range) return generateErrorPage(416); // 无效 Range
+		if (!range) return withCORS(generateErrorPage(416));
 
 		const { start, end } = range;
 		const chunkLength = end - start + 1;
 
 		const obj = await env.BUCKET.get(key, { range: { offset: start, length: chunkLength } });
-		if (!obj) return generateErrorPage(404);
+		if (!obj) return withCORS(generateErrorPage(404));
 
 		headers.set('Content-Range', `bytes ${start}-${end}/${totalLength}`);
 		headers.set('Content-Length', chunkLength.toString());
@@ -146,26 +174,23 @@ const handleR2Request = async (request, env) => {
 		body = obj.body;
 	} else {
 		const obj = await env.BUCKET.get(key);
-		if (!obj) return generateErrorPage(404);
+		if (!obj) return withCORS(generateErrorPage(404));
 
 		headers.set('Content-Length', totalLength.toString());
 		status = 200;
 		body = obj.body;
 	}
 
-	// 设置 Content-Disposition
-	const disposition = getDisposition(contentType, env);
-	headers.set('Content-Disposition', disposition);
+	headers.set('Content-Disposition', getDisposition(contentType, env));
 
-	// 自动补充 charset=utf-8
 	if (contentType.startsWith('text/') && !contentType.includes('charset')) {
 		headers.set('Content-Type', `${contentType}; charset=${CHARSET_DEFAULT}`);
 	}
 
-	return new Response(body, { status, headers });
+	return withCORS(new Response(body, { status, headers }));
 };
 
-/* -------------------- Cloudflare Worker 入口 -------------------- */
+/* -------------------- Worker 入口 -------------------- */
 
 export default {
 	async fetch(request, env) {
