@@ -1,10 +1,12 @@
 const CHARSET_DEFAULT = 'utf-8';
+
 const ALLOWED_METHODS = new Set(['GET', 'HEAD']);
 
 /* -------------------- 工具函数 -------------------- */
 
 const parseMimeList = (mimeStr) => {
 	if (!mimeStr) return [];
+
 	return mimeStr
 		.split(',')
 		.map((t) => t.trim().toLowerCase())
@@ -24,93 +26,147 @@ const generateErrorPage = (statusCode, customMessage = null) => {
 
 	return new Response(
 		`<!DOCTYPE html>
-		<html lang="zh-CN">
-		<head>
-			<meta charset="UTF-8" />
-			<meta name="viewport" content="width=device-width, initial-scale=1.0" />
-			<title>${customMessage ? '配置错误' : '状态 ' + statusCode}</title>
-			<style>
-				body {
-					font-family: system-ui, sans-serif;
-					display: flex;
-					justify-content: center;
-					align-items: center;
-					height: 100vh;
-					margin: 0;
-					background: #f4f6fb;
-				}
-				.container {
-					text-align: center;
-					background: white;
-					padding: 2rem 3rem;
-					border-radius: 12px;
-					box-shadow: 0 5px 25px rgba(0,0,0,0.1);
-				}
-				.status { font-size: 4rem; color: #667eea; font-weight: bold; }
-				h1 { margin: 0.5rem 0; color: #333; }
-				p { color: #666; }
-			</style>
-		</head>
-		<body>
-			<div class="container">
-				<h1>${customMessage ? '配置错误' : '请求状态'}</h1>
-				<div class="status">${customMessage ? '!' : statusCode}</div>
-				<p>${msg}</p>
-			</div>
-		</body>
-		</html>`,
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>${statusCode}</title>
+<style>
+body{
+	font-family:system-ui,sans-serif;
+	display:flex;
+	justify-content:center;
+	align-items:center;
+	height:100vh;
+	background:#f4f6fb;
+	margin:0
+}
+.container{
+	background:white;
+	padding:2rem 3rem;
+	border-radius:12px;
+	box-shadow:0 5px 25px rgba(0,0,0,.1);
+	text-align:center
+}
+.status{
+	font-size:4rem;
+	color:#667eea;
+	font-weight:bold
+}
+</style>
+</head>
+
+<body>
+<div class="container">
+<div class="status">${statusCode}</div>
+<h1>${customMessage ? '配置错误' : '请求状态'}</h1>
+<p>${msg}</p>
+</div>
+</body>
+</html>`,
 		{
 			status: customMessage ? 500 : statusCode,
-			headers: { 'Content-Type': 'text/html; charset=utf-8' },
+			headers: {
+				'Content-Type': 'text/html;charset=utf-8',
+			},
 		},
 	);
 };
 
-// 解析 Range 请求
+/*
+ Range解析
+
+ 支持:
+ bytes=0-100
+ bytes=100-
+*/
+
 function parseRange(rangeHeader, totalLength) {
-	if (!rangeHeader || !rangeHeader.startsWith('bytes=')) return null;
-	const [startStr, endStr] = rangeHeader.replace('bytes=', '').split('-');
-	let start = parseInt(startStr, 10);
-	let end = endStr ? parseInt(endStr, 10) : totalLength - 1;
-	if (isNaN(start) || start < 0 || start >= totalLength) return null;
-	if (isNaN(end) || end >= totalLength) end = totalLength - 1;
-	if (end < start) return null;
-	return { start, end };
+	if (!rangeHeader || !rangeHeader.startsWith('bytes=')) {
+		return null;
+	}
+
+	const value = rangeHeader.replace('bytes=', '');
+
+	// 不支持多Range
+	if (value.includes(',')) {
+		return null;
+	}
+
+	const [startStr, endStr] = value.split('-');
+
+	let start = Number(startStr);
+
+	let end = endStr ? Number(endStr) : totalLength - 1;
+
+	if (Number.isNaN(start) || start < 0 || start >= totalLength) {
+		return null;
+	}
+
+	if (Number.isNaN(end) || end >= totalLength) {
+		end = totalLength - 1;
+	}
+
+	if (end < start) {
+		return null;
+	}
+
+	return {
+		start,
+		end,
+	};
 }
 
-// 根据 Content-Type 判定 inline / attachment
-const getDisposition = (contentType, env) => {
-	if (!contentType) return 'attachment';
-	contentType = contentType.toLowerCase();
+// inline / attachment
 
-	const forcePreviewList = parseMimeList(env.FORCE_PREVIEW_TYPES);
-	const forceDownloadList = parseMimeList(env.FORCE_DOWNLOAD_TYPES);
+const getDisposition = (contentType, env, filename) => {
+	const forcePreview = parseMimeList(env.FORCE_PREVIEW_TYPES);
 
-	if (forcePreviewList.some((t) => contentType.includes(t))) return 'inline';
-	if (forceDownloadList.some((t) => contentType.includes(t))) return 'attachment';
+	const forceDownload = parseMimeList(env.FORCE_DOWNLOAD_TYPES);
 
-	if (contentType.startsWith('image/')) return 'inline';
-	if (contentType.startsWith('text/')) return 'inline';
-	if (contentType.includes('application/pdf')) return 'inline';
+	const type = contentType.toLowerCase();
 
-	const otherPreview = ['application/json', 'application/xml', 'application/javascript', 'text/javascript'];
-	if (otherPreview.some((t) => contentType.includes(t))) return 'inline';
+	let disposition;
 
-	return 'attachment';
+	if (forcePreview.some((t) => type.includes(t))) {
+		disposition = 'inline';
+	} else if (forceDownload.some((t) => type.includes(t))) {
+		disposition = 'attachment';
+	} else if (
+		type.startsWith('image/') ||
+		type.startsWith('text/') ||
+		type.includes('application/pdf') ||
+		type.includes('application/json') ||
+		type.includes('application/xml')
+	) {
+		disposition = 'inline';
+	} else {
+		disposition = 'attachment';
+	}
+
+	return `${disposition}; filename*=UTF-8''${encodeURIComponent(filename)}`;
 };
 
 /* -------------------- CORS -------------------- */
 
 const applyCORS = (headers) => {
 	headers.set('Access-Control-Allow-Origin', '*');
+
 	headers.set('Access-Control-Allow-Methods', 'GET,HEAD,OPTIONS');
+
 	headers.set('Access-Control-Allow-Headers', 'Range, Content-Type, Authorization, If-None-Match');
-	headers.set('Access-Control-Expose-Headers', 'Content-Length, Content-Range, Accept-Ranges, Content-Type, Content-Disposition, ETag');
+
+	headers.set(
+		'Access-Control-Expose-Headers',
+		['Content-Length', 'Content-Range', 'Accept-Ranges', 'Content-Type', 'Content-Disposition', 'ETag'].join(', '),
+	);
 };
 
 const withCORS = (response) => {
 	const headers = new Headers(response.headers);
+
 	applyCORS(headers);
+
 	return new Response(response.body, {
 		status: response.status,
 		statusText: response.statusText,
@@ -118,14 +174,20 @@ const withCORS = (response) => {
 	});
 };
 
-/* -------------------- 主处理逻辑 -------------------- */
+/* -------------------- 主逻辑 -------------------- */
 
 const handleR2Request = async (request, env) => {
 	// OPTIONS
+
 	if (request.method === 'OPTIONS') {
 		const headers = new Headers();
+
 		applyCORS(headers);
-		return new Response(null, { status: 204, headers });
+
+		return new Response(null, {
+			status: 204,
+			headers,
+		});
 	}
 
 	if (!ALLOWED_METHODS.has(request.method)) {
@@ -133,83 +195,131 @@ const handleR2Request = async (request, env) => {
 	}
 
 	const url = new URL(request.url);
+
 	let key;
+
 	try {
-		key = decodeURIComponent(url.pathname.slice(1));
-		key = key.trim().replace(/\\/g, '/');
-		if (!key) return withCORS(generateErrorPage(404));
+		key = decodeURIComponent(url.pathname.slice(1)).trim().replace(/\\/g, '/');
+
+		if (!key) {
+			return withCORS(generateErrorPage(404));
+		}
 	} catch {
 		return withCORS(generateErrorPage(400, '路径解析失败'));
 	}
 
-	const objMeta = await env.BUCKET.head(key).catch(() => null);
-	if (!objMeta) return withCORS(generateErrorPage(404));
+	const meta = await env.BUCKET.head(key).catch(() => null);
 
-	const totalLength = objMeta.size;
-	const contentType = objMeta.httpMetadata?.contentType || 'application/octet-stream';
-	const etag = objMeta.etag;
-
-	const headers = new Headers();
-	headers.set('Content-Type', contentType);
-	headers.set('Accept-Ranges', 'bytes');
-	headers.set('ETag', etag);
-
-	// ⭐ Cache-Control（安全缓存）
-	headers.set('Cache-Control', 'public, max-age=300, stale-while-revalidate=3600');
-
-	// ⭐ ETag 命中 → 304（在 GET 之前）
-	const ifNoneMatch = request.headers.get('If-None-Match');
-	if (ifNoneMatch && ifNoneMatch === etag) {
-		return withCORS(new Response(null, { status: 304, headers }));
+	if (!meta) {
+		return withCORS(generateErrorPage(404));
 	}
 
+	const totalLength = meta.size;
+
+	const contentType = meta.httpMetadata?.contentType || 'application/octet-stream';
+
+	const etag = meta.etag;
+
+	const filename = key.split('/').pop();
+
+	const headers = new Headers();
+
+	headers.set('Content-Type', contentType);
+
+	headers.set('Accept-Ranges', 'bytes');
+
+	headers.set('ETag', etag);
+
+	headers.set('Cache-Control', 'public,max-age=300,stale-while-revalidate=3600');
+
+	headers.set('Content-Disposition', getDisposition(contentType, env, filename));
+
+	// 304
+
+	const ifNoneMatch = request.headers.get('If-None-Match');
+
+	if (ifNoneMatch && ifNoneMatch === etag) {
+		return withCORS(
+			new Response(null, {
+				status: 304,
+				headers,
+			}),
+		);
+	}
+
+	// HEAD
+
+	if (request.method === 'HEAD') {
+		headers.set('Content-Length', totalLength.toString());
+
+		return withCORS(
+			new Response(null, {
+				status: 200,
+				headers,
+			}),
+		);
+	}
+
+	let body;
+
+	let status = 200;
+
 	const rangeHeader = request.headers.get('Range');
-	let status, body;
 
 	if (rangeHeader) {
 		const range = parseRange(rangeHeader, totalLength);
-		if (!range) return withCORS(generateErrorPage(416));
+
+		if (!range) {
+			return withCORS(generateErrorPage(416));
+		}
 
 		const { start, end } = range;
-		const chunkLength = end - start + 1;
+
+		const length = end - start + 1;
 
 		const obj = await env.BUCKET.get(key, {
-			range: { offset: start, length: chunkLength },
+			range: {
+				offset: start,
+				length,
+			},
 		});
-		if (!obj) return withCORS(generateErrorPage(404));
+
+		if (!obj) {
+			return withCORS(generateErrorPage(404));
+		}
 
 		headers.set('Content-Range', `bytes ${start}-${end}/${totalLength}`);
-		headers.set('Content-Length', chunkLength.toString());
+
+		headers.set('Content-Length', length.toString());
 
 		status = 206;
+
 		body = obj.body;
 	} else {
 		const obj = await env.BUCKET.get(key);
-		if (!obj) return withCORS(generateErrorPage(404));
+
+		if (!obj) {
+			return withCORS(generateErrorPage(404));
+		}
 
 		headers.set('Content-Length', totalLength.toString());
-		status = 200;
+
 		body = obj.body;
 	}
-
-	headers.set('Content-Disposition', getDisposition(contentType, env));
 
 	if (contentType.startsWith('text/') && !contentType.includes('charset')) {
 		headers.set('Content-Type', `${contentType}; charset=${CHARSET_DEFAULT}`);
 	}
 
-	const response = withCORS(new Response(body, { status, headers }));
-
-	// ⭐ Cache API：只缓存 GET + 200 + 非 Range
-	if (request.method === 'GET' && status === 200 && !rangeHeader) {
-		const cacheKey = new Request(request.url, request);
-		await caches.default.put(cacheKey, response.clone());
-	}
-
-	return response;
+	return withCORS(
+		new Response(body, {
+			status,
+			headers,
+		}),
+	);
 };
 
-/* -------------------- Worker 入口 -------------------- */
+/* -------------------- Worker入口 -------------------- */
 
 export default {
 	async fetch(request, env) {
